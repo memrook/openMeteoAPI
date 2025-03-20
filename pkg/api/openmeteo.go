@@ -71,6 +71,11 @@ func (o *OpenMeteoAPI) GetWeatherData(latitude, longitude float64, pastDays int)
 	endDate := time.Now()
 	startDate := endDate.AddDate(0, 0, -pastDays)
 
+	return o.GetWeatherDataByDates(latitude, longitude, startDate, endDate)
+}
+
+// GetWeatherDataByDates получает данные о погоде для указанных координат за указанный период между датами
+func (o *OpenMeteoAPI) GetWeatherDataByDates(latitude, longitude float64, startDate, endDate time.Time) (*WeatherData, error) {
 	params := url.Values{}
 	params.Add("latitude", strconv.FormatFloat(latitude, 'f', 6, 64))
 	params.Add("longitude", strconv.FormatFloat(longitude, 'f', 6, 64))

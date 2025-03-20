@@ -123,95 +123,133 @@ func processStation(openMeteoAPI *api.OpenMeteoAPI, dbManager *database.DBManage
 	log.Printf("Обрабатываем станцию: %s (ID: %s, координаты: %.6f, %.6f)",
 		stationLabel, station.ID, station.Latitude, station.Longitude)
 
-	// Проверяем наличие исторических данных для каждого сенсора
-	var existingSensors []string
-	var newSensors []string
-	var minTimestamp int64 = time.Now().UnixNano() / int64(time.Millisecond)
+	// Проверяем наличие данных для каждого сенсора
+	var noDataSensors []string
+	sensorLastTimes := make(map[string]time.Time)
+	now := time.Now()
 
+	// Старшая дата последней записи среди всех сенсоров
+	var latestRecordTime time.Time
+
+	// Получаем последние записи для каждого сенсора
 	for _, sensor := range openMeteoSensors {
 		// Получаем время последней записи из базы данных
 		lastTs, err := dbManager.GetLatestTelemetryTimestamp(station.ID, sensor)
 		if err != nil {
 			log.Printf("Ошибка при получении последнего timestamp для %s-%s: %v", station.ID, sensor, err)
-			// Если ошибка, считаем, что данных нет
-			newSensors = append(newSensors, sensor)
+			noDataSensors = append(noDataSensors, sensor)
 			continue
 		}
 
 		// Проверяем, есть ли для этого датчика данные в базе
 		if lastTs > 0 {
-			existingSensors = append(existingSensors, sensor)
+			// Преобразуем timestamp в time.Time
+			lastTime := time.Unix(0, lastTs*int64(time.Millisecond))
+			sensorLastTimes[sensor] = lastTime
 
-			// Определяем минимальный timestamp для всех существующих датчиков
-			if lastTs < minTimestamp {
-				minTimestamp = lastTs
+			// Обновляем latestRecordTime, если текущая запись новее
+			if lastTime.After(latestRecordTime) {
+				latestRecordTime = lastTime
 			}
 		} else {
 			// Датчик есть в списке, но данных по нему нет
-			newSensors = append(newSensors, sensor)
+			noDataSensors = append(noDataSensors, sensor)
 		}
 	}
 
-	// Если у нас нет исторических данных, загружаем за предыдущие N дней
-	if len(newSensors) > 0 {
-		log.Printf("Для станции %s запрашиваем архивные данные за %d дней", station.ID, pastDays)
+	// Если нет ни одной записи ни по одному сенсору - загружаем данные за весь период (pastDays)
+	if len(sensorLastTimes) == 0 {
+		log.Printf("Для станции %s нет данных, запрашиваем архивные данные за %d дней", station.ID, pastDays)
 
-		// Получаем данные из OpenMeteo API
+		// Получаем данные из OpenMeteo API за весь период
 		weatherData, err := openMeteoAPI.GetWeatherData(station.Latitude, station.Longitude, pastDays)
 		if err != nil {
 			log.Printf("Ошибка при получении данных из Archive OpenMeteo API для станции %s: %v", station.ID, err)
 			return
 		}
 
-		// Преобразуем данные в формат телеметрии и сохраняем в базе
-		telemetryMap := openMeteoAPI.ConvertToTelemetryMap(weatherData)
+		// Сохраняем все данные
+		processTelemetryData(openMeteoAPI, dbManager, station.ID, weatherData, "Архивные данные")
+		return
+	}
 
-		// Сохраняем телеметрию в базу данных
-		if err := dbManager.StoreTelemetry(station.ID, telemetryMap); err != nil {
-			log.Printf("Ошибка при сохранении телеметрии для станции %s: %v", station.ID, err)
-			return
-		}
+	// Если у нас есть хотя бы одна запись, загружаем данные только с момента последней записи
+	// Добавим 1 час к последней записи во избежание дублирования
+	startDate := latestRecordTime.Add(time.Hour)
 
-		log.Printf("Архивные данные для станции %s успешно сохранены", station.ID)
-	} else if len(existingSensors) > 0 {
-		// Если у нас уже есть исторические данные, загружаем только за последний день
-		log.Printf("Для станции %s запрашиваем новые данные за последний день", station.ID)
+	// Вычисляем разницу между последней записью и текущим временем в днях
+	daysDiff := int(now.Sub(startDate).Hours()/24) + 1 // +1 день для надежности
 
-		// Получаем данные из OpenMeteo API только за последний день
-		weatherData, err := openMeteoAPI.GetWeatherData(station.Latitude, station.Longitude, 1)
-		if err != nil {
-			log.Printf("Ошибка при получении данных из Archive OpenMeteo API для станции %s: %v", station.ID, err)
-			return
-		}
+	// Если с момента последней записи прошло менее 1 дня, нет смысла загружать новые данные
+	if daysDiff < 1 {
+		log.Printf("Для станции %s последние данные были получены менее 1 дня назад (%s), пропускаем обновление",
+			station.ID, latestRecordTime.Format("2006-01-02 15:04:05"))
+		return
+	}
 
-		// Преобразуем данные в формат телеметрии
-		telemetryMap := openMeteoAPI.ConvertToTelemetryMap(weatherData)
+	log.Printf("Для станции %s запрашиваем данные с %s по %s (%d дней)",
+		station.ID,
+		startDate.Format("2006-01-02"),
+		now.Format("2006-01-02"),
+		daysDiff)
 
-		// Фильтруем только новые данные
-		filteredTelemetryMap := make(map[string][]api.TelemetryPoint)
-		for key, points := range telemetryMap {
-			var filteredPoints []api.TelemetryPoint
-			for _, point := range points {
-				if point.Ts > minTimestamp {
-					filteredPoints = append(filteredPoints, point)
-				}
-			}
-			if len(filteredPoints) > 0 {
-				filteredTelemetryMap[key] = filteredPoints
-			}
-		}
+	// Получаем данные из OpenMeteo API за период с последней записи до текущего времени
+	weatherData, err := openMeteoAPI.GetWeatherDataByDates(station.Latitude, station.Longitude, startDate, now)
+	if err != nil {
+		log.Printf("Ошибка при получении данных из Archive OpenMeteo API для станции %s: %v", station.ID, err)
+		return
+	}
 
-		// Если есть новые данные, сохраняем их в базу
-		if len(filteredTelemetryMap) > 0 {
-			// Сохраняем телеметрию в базу данных
-			if err := dbManager.StoreTelemetry(station.ID, filteredTelemetryMap); err != nil {
-				log.Printf("Ошибка при сохранении новой телеметрии для станции %s: %v", station.ID, err)
+	// Сохраняем новые данные
+	processTelemetryData(openMeteoAPI, dbManager, station.ID, weatherData, "Новые данные")
+
+	// Если есть сенсоры без данных - для них загружаем полную историю отдельно
+	if len(noDataSensors) > 0 {
+		log.Printf("Для станции %s запрашиваем полную историю для сенсоров без данных: %v",
+			station.ID, noDataSensors)
+
+		// Здесь мы уже загрузили данные за период от последней записи до текущего времени
+		// Теперь нужно загрузить исторические данные за весь период для сенсоров без записей
+		historicalStartDate := now.AddDate(0, 0, -pastDays)
+
+		// Запрашиваем исторические данные от (now - pastDays) до startDate
+		if historicalStartDate.Before(startDate) {
+			weatherData, err = openMeteoAPI.GetWeatherDataByDates(
+				station.Latitude, station.Longitude, historicalStartDate, startDate)
+			if err != nil {
+				log.Printf("Ошибка при получении исторических данных для станции %s: %v", station.ID, err)
 				return
 			}
 
-			log.Printf("Новые данные для станции %s успешно сохранены", station.ID)
-		} else {
-			log.Printf("Для станции %s нет новых данных", station.ID)
+			// Сохраняем исторические данные
+			processTelemetryData(openMeteoAPI, dbManager, station.ID, weatherData, "Исторические данные")
 		}
 	}
+}
+
+// processTelemetryData обрабатывает и сохраняет данные телеметрии
+func processTelemetryData(openMeteoAPI *api.OpenMeteoAPI, dbManager *database.DBManager, stationID string, weatherData *api.WeatherData, logPrefix string) {
+	// Преобразуем данные в формат телеметрии
+	telemetryMap := openMeteoAPI.ConvertToTelemetryMap(weatherData)
+
+	// Подсчитываем общее количество точек данных для логирования
+	totalPoints := 0
+	for _, points := range telemetryMap {
+		totalPoints += len(points)
+	}
+
+	// Если данных нет, выходим
+	if totalPoints == 0 {
+		log.Printf("%s для станции %s: нет новых данных", logPrefix, stationID)
+		return
+	}
+
+	// Сохраняем телеметрию в базу данных
+	if err := dbManager.StoreTelemetry(stationID, telemetryMap); err != nil {
+		log.Printf("Ошибка при сохранении телеметрии для станции %s: %v", stationID, err)
+		return
+	}
+
+	log.Printf("%s для станции %s успешно сохранены: %d точек данных",
+		logPrefix, stationID, totalPoints)
 }
