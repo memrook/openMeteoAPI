@@ -77,6 +77,11 @@ cd openMeteoAPI
 go build -o OpenMeteoService ./cmd/openmeteo
 ```
 
+Сборка на Linux/MacOS для Windows:
+```bash
+GOOS=windows GOARCH=amd64 go build -o OpenMeteoService ./cmd/openmeteo
+```
+
 ### Установка с помощью Docker
 
 ```bash
