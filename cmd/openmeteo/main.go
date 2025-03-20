@@ -13,7 +13,7 @@ import (
 	"openMeteoAPI/pkg/database"
 )
 
-// Определение сенсоров для OpenMeteo API
+// Определение сенсоров архива для OpenMeteo API
 var openMeteoSensors = []string{
 	"openmeteo_temperature",
 	"openmeteo_humidity",
@@ -25,6 +25,30 @@ var openMeteoSensors = []string{
 	"openmeteo_soil_temp_7_28",
 	"openmeteo_soil_moisture_0_7",
 	"openmeteo_soil_moisture_7_28",
+}
+
+// Определение сенсоров для прогноза OpenMeteo
+var forecastSensors = []string{
+	"forecast_temperature",
+	"forecast_humidity",
+	"forecast_precipitation",
+	"forecast_precipitation_probability",
+	"forecast_wind_speed",
+	"forecast_wind_direction",
+	"forecast_wind_gusts",
+	"forecast_dew_point",
+	"forecast_soil_temp_18cm",
+	"forecast_soil_temp_6cm",
+	"forecast_soil_temp_0cm",
+	"forecast_soil_moisture_1_3cm",
+	"forecast_soil_moisture_3_9cm",
+	"forecast_soil_moisture_9_27cm",
+	"forecast_daily_precipitation_sum",
+	"forecast_daily_wind_direction",
+	"forecast_daily_temp_min",
+	"forecast_daily_temp_max",
+	"forecast_daily_wind_gusts_max",
+	"forecast_daily_precipitation_hours",
 }
 
 func main() {
@@ -100,12 +124,33 @@ func collectData(openMeteoAPI *api.OpenMeteoAPI, dbManager *database.DBManager, 
 		return
 	}
 
-	// Обрабатываем каждую станцию
-	for _, station := range stations {
-		processStation(openMeteoAPI, dbManager, station, cfg.PastDays)
-	}
+	// Создаем группу ожидания для параллельной обработки
+	var wg sync.WaitGroup
 
-	log.Println("Сбор данных из Archive OpenMeteo API завершен")
+	// Параллельно обрабатываем архивные данные и прогноз
+	wg.Add(2)
+
+	// Обрабатываем каждую станцию для архивных данных
+	go func() {
+		defer wg.Done()
+		for _, station := range stations {
+			processStation(openMeteoAPI, dbManager, station, cfg.PastDays)
+		}
+		log.Println("Сбор архивных данных из Archive OpenMeteo API завершен")
+	}()
+
+	// Параллельно обрабатываем прогноз погоды
+	go func() {
+		defer wg.Done()
+		for _, station := range stations {
+			processForecast(openMeteoAPI, dbManager, station, cfg.ForecastPastDays)
+		}
+		log.Println("Сбор данных прогноза из OpenMeteo Forecast API завершен")
+	}()
+
+	// Ожидаем завершения всех горутин
+	wg.Wait()
+	log.Println("Сбор всех данных из OpenMeteo API завершен")
 }
 
 // processStation обрабатывает отдельную станцию
@@ -225,6 +270,80 @@ func processStation(openMeteoAPI *api.OpenMeteoAPI, dbManager *database.DBManage
 			processTelemetryData(openMeteoAPI, dbManager, station.ID, weatherData, "Исторические данные")
 		}
 	}
+}
+
+// processForecast получает и сохраняет данные прогноза погоды для станции
+func processForecast(openMeteoAPI *api.OpenMeteoAPI, dbManager *database.DBManager, station struct {
+	ID        string
+	Label     string
+	Latitude  float64
+	Longitude float64
+}, pastDays int) {
+	stationLabel := station.Label
+	if stationLabel == "" {
+		stationLabel = station.ID
+	}
+
+	log.Printf("Обрабатываем прогноз для станции: %s (ID: %s, координаты: %.6f, %.6f)",
+		stationLabel, station.ID, station.Latitude, station.Longitude)
+
+	// Проверяем, когда последний раз обновлялись данные прогноза
+	var latestUpdateTime time.Time
+	for _, sensor := range forecastSensors {
+		lastTs, err := dbManager.GetLatestForecastTimestamp(station.ID, sensor)
+		if err != nil {
+			log.Printf("Ошибка при получении последнего timestamp прогноза для %s-%s: %v", station.ID, sensor, err)
+			continue
+		}
+
+		if lastTs > 0 {
+			lastTime := time.Unix(0, lastTs*int64(time.Millisecond))
+			if lastTime.After(latestUpdateTime) {
+				latestUpdateTime = lastTime
+			}
+		}
+	}
+
+	// Если прогноз обновлялся менее 3 часов назад, пропускаем обновление
+	if !latestUpdateTime.IsZero() && time.Since(latestUpdateTime) < 3*time.Hour {
+		log.Printf("Для станции %s прогноз обновлялся менее 3 часов назад (%s), пропускаем обновление",
+			station.ID, latestUpdateTime.Format("2006-01-02 15:04:05"))
+		return
+	}
+
+	// Получаем данные прогноза
+	log.Printf("Запрашиваем данные прогноза для станции %s с прошлыми данными за %d дней",
+		station.ID, pastDays)
+
+	forecastData, err := openMeteoAPI.GetWeatherForecast(station.Latitude, station.Longitude, pastDays)
+	if err != nil {
+		log.Printf("Ошибка при получении прогноза для станции %s: %v", station.ID, err)
+		return
+	}
+
+	// Преобразуем данные в формат телеметрии
+	telemetryMap := openMeteoAPI.ConvertForecastToTelemetryMap(forecastData)
+
+	// Подсчитываем общее количество точек данных для логирования
+	totalPoints := 0
+	for _, points := range telemetryMap {
+		totalPoints += len(points)
+	}
+
+	// Если данных нет, выходим
+	if totalPoints == 0 {
+		log.Printf("Для станции %s не получено данных прогноза", station.ID)
+		return
+	}
+
+	// Сохраняем данные прогноза в базу данных
+	if err := dbManager.StoreForecast(station.ID, telemetryMap); err != nil {
+		log.Printf("Ошибка при сохранении прогноза для станции %s: %v", station.ID, err)
+		return
+	}
+
+	log.Printf("Данные прогноза для станции %s успешно сохранены: %d точек данных",
+		station.ID, totalPoints)
 }
 
 // processTelemetryData обрабатывает и сохраняет данные телеметрии

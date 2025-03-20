@@ -20,7 +20,8 @@ type Config struct {
 	CollectionInterval int
 
 	// Количество дней для предыдущих данных
-	PastDays int
+	PastDays         int
+	ForecastPastDays int
 }
 
 // LoadConfig загружает конфигурацию из .env файла и переменных окружения
@@ -40,6 +41,9 @@ func LoadConfig() *Config {
 
 		// Количество дней истории (по умолчанию 365 дней)
 		PastDays: getEnvAsInt("PAST_DAYS", 365),
+
+		// Количество дней истории (по умолчанию 365 дней)
+		ForecastPastDays: getEnvAsInt("PAST_DAYS", 92),
 	}
 
 	// Проверка обязательных полей
