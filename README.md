@@ -72,17 +72,17 @@
 ### Установка из исходников
 
 ```bash
-git clone https://github.com/yourusername/openmeteo-service.git
-cd openmeteo-service
-go build -o openmeteo-service ./cmd/openmeteo
+git clone https://github.com/memrook/openMeteoAPI.git
+cd openMeteoAPI
+go build -o OpenMeteoService ./cmd/openmeteo
 ```
 
 ### Установка с помощью Docker
 
 ```bash
-git clone https://github.com/yourusername/openmeteo-service.git
-cd openmeteo-service
-docker build -t openmeteo-service .
+git clone https://github.com/memrook/openMeteoAPI.git
+cd openMeteoAPI
+docker build -t OpenMeteoService .
 ```
 
 ## Настройка
@@ -107,6 +107,7 @@ DB_PASSWORD=your-password
 # Параметры сбора данных
 COLLECTION_INTERVAL=60 # Интервал сбора данных в минутах
 PAST_DAYS=365 # Количество дней для загрузки исторических данных при первом запуске
+FORECAST_PAST_DAYS=92 # Количество дней для загрузки прогнозных данных при первом запуске (макс. 92)
 ```
 
 ## Запуск

@@ -43,7 +43,7 @@ func LoadConfig() *Config {
 		PastDays: getEnvAsInt("PAST_DAYS", 365),
 
 		// Количество дней истории (по умолчанию 365 дней)
-		ForecastPastDays: getEnvAsInt("PAST_DAYS", 92),
+		ForecastPastDays: getEnvAsInt("FORECAST_PAST_DAYS", 92),
 	}
 
 	// Проверка обязательных полей
