@@ -65,6 +65,7 @@ func (d *DBManager) CreateTablesIfNotExists() error {
 		Timestamp BIGINT NOT NULL,
 		DateValue DATETIME NOT NULL,
 		Value FLOAT,
+		CreatedAt DATETIME2 NOT NULL DEFAULT GETDATE(),
 		CONSTRAINT UQ_OpenMeteoTelemetry_Station_Sensor_Date UNIQUE (StationID, SensorKey, Timestamp)
 	)
 	`)
@@ -82,6 +83,7 @@ func (d *DBManager) CreateTablesIfNotExists() error {
 		Timestamp BIGINT NOT NULL,
 		DateValue DATETIME NOT NULL,
 		Value FLOAT,
+		CreatedAt DATETIME2 NOT NULL DEFAULT GETDATE(),
 		CONSTRAINT UQ_OpenMeteoForecast_Station_Sensor_Date UNIQUE (StationID, SensorKey, Timestamp)
 	)
 	`)
@@ -121,6 +123,36 @@ func (d *DBManager) CreateTablesIfNotExists() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("ошибка при создании индекса: %w", err)
+	}
+
+	// Добавляем колонку CreatedAt в существующую таблицу OpenMeteoTelemetry, если ее еще нет
+	_, err = d.DB.Exec(`
+	IF NOT EXISTS (
+		SELECT * FROM sys.columns 
+		WHERE name = 'CreatedAt' AND object_id = OBJECT_ID('OpenMeteoTelemetry')
+	)
+	BEGIN
+		ALTER TABLE OpenMeteoTelemetry 
+		ADD CreatedAt DATETIME2 NOT NULL DEFAULT GETDATE()
+	END
+	`)
+	if err != nil {
+		return fmt.Errorf("ошибка при добавлении колонки CreatedAt в таблицу OpenMeteoTelemetry: %w", err)
+	}
+
+	// Добавляем колонку CreatedAt в существующую таблицу OpenMeteoForecast, если ее еще нет
+	_, err = d.DB.Exec(`
+	IF NOT EXISTS (
+		SELECT * FROM sys.columns 
+		WHERE name = 'CreatedAt' AND object_id = OBJECT_ID('OpenMeteoForecast')
+	)
+	BEGIN
+		ALTER TABLE OpenMeteoForecast 
+		ADD CreatedAt DATETIME2 NOT NULL DEFAULT GETDATE()
+	END
+	`)
+	if err != nil {
+		return fmt.Errorf("ошибка при добавлении колонки CreatedAt в таблицу OpenMeteoForecast: %w", err)
 	}
 
 	return nil

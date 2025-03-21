@@ -9,7 +9,7 @@ RUN go mod download
 COPY . .
 
 # Сборка приложения
-RUN CGO_ENABLED=0 GOOS=linux go build -o openmeteo-service ./cmd/openmeteo
+RUN go build -o openmeteo-service ./cmd/openmeteo
 
 # Создаем финальный образ
 FROM alpine:latest
